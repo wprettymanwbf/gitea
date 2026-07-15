@@ -203,6 +203,11 @@ func GetAttachmentLinkedTypeAndRepoID(ctx context.Context, a *repo_model.Attachm
 		}
 		return unit.TypeReleases, rel.RepoID, nil
 	}
+
+	if a.EditorLinked {
+		return unit.TypeCode, a.RepoID, nil
+	}
+
 	return unit.TypeInvalid, 0, nil
 }
 

@@ -33,6 +33,9 @@ type Attachment struct {
 	Size              int64              `xorm:"DEFAULT 0"`
 	CreatedUnix       timeutil.TimeStamp `xorm:"created"`
 	CustomDownloadURL string             `xorm:"-"`
+	// EditorLinked marks an attachment as linked to repo code (embedded in a committed file via
+	// the file editor), as opposed to an abandoned upload. See LinkAttachmentsToRepoCode.
+	EditorLinked bool `xorm:"NOT NULL DEFAULT false"`
 }
 
 func init() {
@@ -168,7 +171,7 @@ func GetAttachmentByReleaseIDFileName(ctx context.Context, releaseID int64, file
 
 func GetUnlinkedAttachmentsByUserID(ctx context.Context, userID int64) ([]*Attachment, error) {
 	attachments := make([]*Attachment, 0, 10)
-	return attachments, db.GetEngine(ctx).Where("uploader_id = ? AND issue_id = 0 AND release_id = 0 AND comment_id = 0", userID).Find(&attachments)
+	return attachments, db.GetEngine(ctx).Where("uploader_id = ? AND issue_id = 0 AND release_id = 0 AND comment_id = 0 AND editor_linked = ?", userID, false).Find(&attachments)
 }
 
 // DeleteAttachment deletes the given attachment and optionally the associated file.

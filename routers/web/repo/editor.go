@@ -327,11 +327,11 @@ func EditFile(ctx *context.Context) {
 	}
 	ctx.Data["CodeEditorConfig"] = editorConfig
 
-	// Allow attaching files (e.g. images) that get committed alongside the edit.
-	// Reuses the repo upload endpoint/dropzone; wired to the code editor in the frontend.
+	// Allow attaching files (e.g. images) that get uploaded as attachments and linked to this
+	// commit; wired to the code editor in the frontend via the dropzone.
 	ctx.Data["EditorUploadEnabled"] = setting.Repository.Upload.Enabled
 	if setting.Repository.Upload.Enabled {
-		upload.AddUploadContextForRepo(ctx, opts.TargetRepo)
+		upload.AddUploadContextForRepoEditorAttachment(ctx, opts.TargetRepo)
 	}
 
 	ctx.HTML(http.StatusOK, tplEditFile)
@@ -362,41 +362,34 @@ func EditFilePost(ctx *context.Context) {
 		return
 	}
 
-	changeFiles := []*files_service.ChangeRepoFile{
-		{
-			Operation:     operation,
-			FromTreePath:  ctx.Repo.TreePath,
-			TreePath:      parsed.form.TreePath,
-			ContentReader: strings.NewReader(strings.ReplaceAll(parsed.form.Content.Value(), "\r", "")),
-		},
-	}
-
-	// Commit any files attached via the editor dropzone into the same directory as the edited file.
-	uploadFiles, uploads, err := files_service.UploadsToChangeRepoFiles(ctx, path.Dir(parsed.form.TreePath), parsed.form.Files)
-	if err != nil {
-		ctx.ServerError("UploadsToChangeRepoFiles", err)
-		return
-	}
-	changeFiles = append(changeFiles, uploadFiles...)
-
-	_, err = files_service.ChangeRepoFiles(ctx, ctx.Repo.Repository, ctx.Doer, &files_service.ChangeRepoFilesOptions{
+	_, err := files_service.ChangeRepoFiles(ctx, ctx.Repo.Repository, ctx.Doer, &files_service.ChangeRepoFilesOptions{
 		LastCommitID: parsed.form.LastCommit,
 		OldBranch:    parsed.OldBranchName,
 		NewBranch:    parsed.NewBranchName,
 		Message:      parsed.GetCommitMessage(defaultCommitMessage),
-		Files:        changeFiles,
-		Signoff:      parsed.form.Signoff,
-		Author:       parsed.GitCommitter,
-		Committer:    parsed.GitCommitter,
+		Files: []*files_service.ChangeRepoFile{
+			{
+				Operation:     operation,
+				FromTreePath:  ctx.Repo.TreePath,
+				TreePath:      parsed.form.TreePath,
+				ContentReader: strings.NewReader(strings.ReplaceAll(parsed.form.Content.Value(), "\r", "")),
+			},
+		},
+		Signoff:   parsed.form.Signoff,
+		Author:    parsed.GitCommitter,
+		Committer: parsed.GitCommitter,
 	})
 	if err != nil {
 		editorHandleFileOperationError(ctx, parsed.NewBranchName, err)
 		return
 	}
 
-	if len(uploads) > 0 {
-		if err := repo_model.DeleteUploads(ctx, uploads...); err != nil {
-			log.Error("DeleteUploads: %v", err)
+	// Permanently link any files attached via the editor dropzone (e.g. images), so they
+	// survive uploader account deletion; abandoned (never-committed) uploads stay unlinked
+	// and are reaped by the existing unlinked-attachment cleanup.
+	if len(parsed.form.Files) > 0 {
+		if err := repo_model.LinkAttachmentsToRepoCode(ctx, ctx.Repo.Repository.ID, ctx.Doer.ID, parsed.form.Files); err != nil {
+			log.Error("LinkAttachmentsToRepoCode: %v", err)
 		}
 	}
 

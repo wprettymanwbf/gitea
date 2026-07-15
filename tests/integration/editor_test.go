@@ -40,8 +40,8 @@ func TestEditor(t *testing.T) {
 			testEditFile(t, sessionUser2, "user2", "repo1", "master", "README.md", "Hello, World (direct)\n")
 			testEditFileToNewBranch(t, sessionUser2, "user2", "repo1", "master", "feature/test", "README.md", "Hello, World (commit-to-new-branch)\n")
 		})
-		t.Run("EditFileWithUpload", func(t *testing.T) {
-			testEditFileWithUpload(t, sessionUser2, "user2", "repo1", "master", "edit-with-upload", "README.md", "Hello, World (with upload)\n")
+		t.Run("EditFileWithAttachment", func(t *testing.T) {
+			testEditFileWithAttachment(t, sessionUser2, "user2", "repo1", "master", "edit-with-attachment", "README.md")
 		})
 		t.Run("PatchFile", testEditorPatchFile)
 		t.Run("DeleteFile", func(t *testing.T) {
@@ -179,34 +179,47 @@ func testEditFile(t *testing.T, session *TestSession, user, repo, branch, filePa
 // testEditFileWithUpload edits a file while also attaching an uploaded file (staged via the
 // repo upload endpoint). Both the edited content and the attached file must land in one commit,
 // with the attached file placed in the same directory as the edited file.
-func testEditFileWithUpload(t *testing.T, session *TestSession, user, repo, branch, targetBranch, filePath, newContent string) {
-	// stage a file via the same endpoint the editor dropzone uses
+// testEditFileWithAttachment edits a file while attaching an image via the editor's
+// dropzone (external attachment, not committed into git). The attachment must be readable
+// by any repo collaborator immediately (even before commit-time linking would matter for a
+// second viewer), and must be marked "linked" once the edit referencing it is committed, so
+// it survives the uploader's account being deleted later.
+func testEditFileWithAttachment(t *testing.T, session *TestSession, user, repo, branch, targetBranch, filePath string) {
+	// upload an attachment via the editor's dedicated endpoint
 	body := &bytes.Buffer{}
 	uploadForm := multipart.NewWriter(body)
-	file, _ := uploadForm.CreateFormFile("file", "attached.txt")
-	_, _ = io.Copy(file, strings.NewReader("attached content"))
+	file, _ := uploadForm.CreateFormFile("file", "image.png")
+	_, _ = io.Copy(file, strings.NewReader("fake image bytes"))
 	_ = uploadForm.Close()
-	req := NewRequestWithBody(t, "POST", fmt.Sprintf("/%s/%s/upload-file", user, repo), body)
+	req := NewRequestWithBody(t, "POST", fmt.Sprintf("/%s/%s/editor/attachments", user, repo), body)
 	req.Header.Add("Content-Type", uploadForm.FormDataContentType())
 	resp := session.MakeRequest(t, req, http.StatusOK)
-	fileUUID := DecodeJSON(t, resp, map[string]string{})["uuid"]
-	require.NotEmpty(t, fileUUID)
+	attachUUID := DecodeJSON(t, resp, map[string]string{})["uuid"]
+	require.NotEmpty(t, attachUUID)
 
-	// edit the file and submit the staged upload's UUID together with it
+	newContent := fmt.Sprintf("Hello, World (with attachment)\n![image](/attachments/%s)\n", attachUUID)
+
+	// edit the file and submit the attachment UUID together with it
 	testEditorActionEdit(t, session, user, repo, "_edit", branch, filePath, map[string]string{
 		"content":         newContent,
 		"commit_choice":   "commit-to-new-branch",
 		"new_branch_name": targetBranch,
-		"files":           fileUUID,
+		"files":           attachUUID,
 	})
 
-	// the attached file must be committed in the same directory as the edited file (root here)
-	req = NewRequest(t, "GET", "/"+path.Join(user, repo, "raw/branch", targetBranch, "attached.txt"))
-	resp = session.MakeRequest(t, req, http.StatusOK)
-	assert.Equal(t, "attached content", resp.Body.String())
+	// the attachment must not be committed into the git tree
+	req = NewRequest(t, "GET", "/"+path.Join(user, repo, "raw/branch", targetBranch, "image.png"))
+	session.MakeRequest(t, req, http.StatusNotFound)
 
-	// the staged upload row must be cleaned up after the commit
-	unittest.AssertNotExistsBean(t, &repo_model.Upload{UUID: fileUUID})
+	// the attachment must be readable by a different signed-in user (not uploader-only)
+	otherSession := loginUser(t, "user4")
+	req = NewRequest(t, "GET", "/attachments/"+attachUUID)
+	otherSession.MakeRequest(t, req, http.StatusOK)
+
+	// the attachment must now be linked, so it's no longer reaped as an "unlinked" upload
+	attach, err := repo_model.GetAttachmentByUUID(t.Context(), attachUUID)
+	require.NoError(t, err)
+	assert.True(t, attach.EditorLinked)
 }
 
 func testEditFileToNewBranch(t *testing.T, session *TestSession, user, repo, branch, targetBranch, filePath, newContent string) {

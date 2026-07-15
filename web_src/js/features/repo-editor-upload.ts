@@ -1,4 +1,5 @@
-import {initDropzone, DropzoneCustomEventUploadDone} from './dropzone.ts';
+import {initDropzone, DropzoneCustomEventUploadDone, generateMarkdownLinkForAttachment} from './dropzone.ts';
+import {imageInfo} from '../utils/image.ts';
 import type {EditorView} from '@codemirror/view';
 
 type CodeEditor = {view: EditorView};
@@ -16,17 +17,6 @@ function getPastedImages(e: ClipboardEvent): Array<File> {
   return images;
 }
 
-// Uploaded files are committed alongside the edit into the same directory as the edited file,
-// so the inserted link is the (relative) filename rather than an /attachments/ URL.
-function generateRelativeMarkdownLink(file: {name: string, type?: string}): string {
-  const encodedName = encodeURIComponent(file.name);
-  if (file.type?.startsWith('image/')) {
-    const alt = file.name.slice(0, file.name.lastIndexOf('.')) || file.name;
-    return `![${alt}](${encodedName})`;
-  }
-  return `[${file.name}](${encodedName})`;
-}
-
 function insertAtCursor(view: EditorView, text: string) {
   view.dispatch(view.state.replaceSelection(text));
   view.focus();
@@ -41,19 +31,22 @@ function replacePlaceholder(view: EditorView, placeholder: string, text: string)
   view.dispatch({changes: {from: idx, to: idx + placeholder.length, insert: text}});
 }
 
-function addFilesToDropzone(view: EditorView, dzInst: any, files: Array<File> | FileList) {
+async function addFilesToDropzone(view: EditorView, dzInst: any, files: Array<File> | FileList) {
   for (const file of files) {
     // A unique placeholder lets us replace exactly this file's text once its upload completes.
     const placeholder = `![Uploading ${file.name}…#${placeholderIdCounter++}]()`;
     (file as any)._giteaEditorPlaceholder = placeholder;
+    const {width, dppx} = await imageInfo(file);
+    (file as any)._giteaEditorImageInfo = {width, dppx};
     insertAtCursor(view, placeholder);
     dzInst.addFile(file);
   }
 }
 
 // initEditorUpload wires the file-editor dropzone to the code editor so that dragging, pasting
-// or picking a file uploads it (staged via the repo upload endpoint) and inserts a relative
-// markdown link at the cursor. The uploaded file is committed together with the edit.
+// or picking a file uploads it as a repo attachment and inserts a markdown link (referencing
+// the attachment by URL) at the cursor. The attachment becomes permanently linked to the repo
+// once the edit is committed (see repo_model.LinkAttachmentsToRepoCode on the backend).
 export async function initEditorUpload(editor: CodeEditor, container: HTMLElement) {
   const dropzoneEl = container.querySelector<HTMLElement>('.editor-upload-dropzone .dropzone');
   if (!dropzoneEl) return;
@@ -64,7 +57,7 @@ export async function initEditorUpload(editor: CodeEditor, container: HTMLElemen
   // Insert a link when an upload finishes. This covers the dropzone's own file picker as well as
   // drag-and-drop and paste (which pre-insert a placeholder that we replace here).
   dzInst.on(DropzoneCustomEventUploadDone, ({file}: {file: any}) => {
-    const link = generateRelativeMarkdownLink(file);
+    const link = generateMarkdownLinkForAttachment(file, file._giteaEditorImageInfo ?? {});
     if (file._giteaEditorPlaceholder) {
       replacePlaceholder(view, file._giteaEditorPlaceholder, link);
     } else {

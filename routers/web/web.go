@@ -1433,6 +1433,8 @@ func registerWebRoutes(m *web.Router, webAuth *AuthMiddleware) {
 			m.Group("", func() {
 				m.Post("/upload-file", repo.UploadFileToServer)
 				m.Post("/upload-remove", repo.RemoveUploadFileFromServer)
+				m.Post("/editor/attachments", repo.EditorUploadAttachment)
+				m.Post("/editor/attachments/remove", repo.DeleteAttachment)
 			}, repo.MustBeAbleToUpload, reqRepoCodeWriter)
 		}, repo.MustBeEditable, context.RepoMustNotBeArchived())
 

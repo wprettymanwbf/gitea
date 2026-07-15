@@ -40,7 +40,7 @@ func (f *CommitCommonForm) GetCommitCommonForm() *CommitCommonForm {
 type EditRepoFileForm struct {
 	CommitCommonForm
 	Content optional.Option[string]
-	Files   []string // UUIDs of files staged via the upload endpoint to commit alongside the edit
+	Files   []string // UUIDs of attachments uploaded via the editor dropzone, to be linked to this commit
 }
 
 type DeleteRepoFileForm struct {
