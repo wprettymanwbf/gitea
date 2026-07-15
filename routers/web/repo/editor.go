@@ -13,6 +13,7 @@ import (
 
 	git_model "gitea.dev/models/git"
 	"gitea.dev/models/issues"
+	repo_model "gitea.dev/models/repo"
 	"gitea.dev/models/unit"
 	"gitea.dev/modules/charset"
 	"gitea.dev/modules/git"
@@ -286,7 +287,7 @@ func EditFile(ctx *context.Context) {
 	// on the "New File" page, we should add an empty path field to make end users could input a new name
 	prepareTreePathFieldsAndPaths(ctx, util.Iif(isNewFile, ctx.Repo.TreePath+"/", ctx.Repo.TreePath))
 
-	prepareEditorPage(ctx, editorAction)
+	opts := prepareEditorPage(ctx, editorAction)
 	if ctx.Written() {
 		return
 	}
@@ -325,6 +326,14 @@ func EditFile(ctx *context.Context) {
 		editorConfig.Filename = ""
 	}
 	ctx.Data["CodeEditorConfig"] = editorConfig
+
+	// Allow attaching files (e.g. images) that get committed alongside the edit.
+	// Reuses the repo upload endpoint/dropzone; wired to the code editor in the frontend.
+	ctx.Data["EditorUploadEnabled"] = setting.Repository.Upload.Enabled
+	if setting.Repository.Upload.Enabled {
+		upload.AddUploadContextForRepo(ctx, opts.TargetRepo)
+	}
+
 	ctx.HTML(http.StatusOK, tplEditFile)
 }
 
@@ -353,26 +362,42 @@ func EditFilePost(ctx *context.Context) {
 		return
 	}
 
-	_, err := files_service.ChangeRepoFiles(ctx, ctx.Repo.Repository, ctx.Doer, &files_service.ChangeRepoFilesOptions{
+	changeFiles := []*files_service.ChangeRepoFile{
+		{
+			Operation:     operation,
+			FromTreePath:  ctx.Repo.TreePath,
+			TreePath:      parsed.form.TreePath,
+			ContentReader: strings.NewReader(strings.ReplaceAll(parsed.form.Content.Value(), "\r", "")),
+		},
+	}
+
+	// Commit any files attached via the editor dropzone into the same directory as the edited file.
+	uploadFiles, uploads, err := files_service.UploadsToChangeRepoFiles(ctx, path.Dir(parsed.form.TreePath), parsed.form.Files)
+	if err != nil {
+		ctx.ServerError("UploadsToChangeRepoFiles", err)
+		return
+	}
+	changeFiles = append(changeFiles, uploadFiles...)
+
+	_, err = files_service.ChangeRepoFiles(ctx, ctx.Repo.Repository, ctx.Doer, &files_service.ChangeRepoFilesOptions{
 		LastCommitID: parsed.form.LastCommit,
 		OldBranch:    parsed.OldBranchName,
 		NewBranch:    parsed.NewBranchName,
 		Message:      parsed.GetCommitMessage(defaultCommitMessage),
-		Files: []*files_service.ChangeRepoFile{
-			{
-				Operation:     operation,
-				FromTreePath:  ctx.Repo.TreePath,
-				TreePath:      parsed.form.TreePath,
-				ContentReader: strings.NewReader(strings.ReplaceAll(parsed.form.Content.Value(), "\r", "")),
-			},
-		},
-		Signoff:   parsed.form.Signoff,
-		Author:    parsed.GitCommitter,
-		Committer: parsed.GitCommitter,
+		Files:        changeFiles,
+		Signoff:      parsed.form.Signoff,
+		Author:       parsed.GitCommitter,
+		Committer:    parsed.GitCommitter,
 	})
 	if err != nil {
 		editorHandleFileOperationError(ctx, parsed.NewBranchName, err)
 		return
+	}
+
+	if len(uploads) > 0 {
+		if err := repo_model.DeleteUploads(ctx, uploads...); err != nil {
+			log.Error("DeleteUploads: %v", err)
+		}
 	}
 
 	redirectForCommitChoice(ctx, parsed, parsed.form.TreePath)

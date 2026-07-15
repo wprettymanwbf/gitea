@@ -4,6 +4,7 @@ import {trimTrailingWhitespaceFromView} from '../modules/codeeditor/utils.ts';
 import {hideElem, queryElems, showElem, createElementFromHTML, onInputDebounce} from '../utils/dom.ts';
 import {POST} from '../modules/fetch.ts';
 import {initDropzone} from './dropzone.ts';
+import {initEditorUpload} from './repo-editor-upload.ts';
 import {confirmModal} from './comp/ConfirmModal.ts';
 import {applyAreYouSure, ignoreAreYouSure} from '../vendor/jquery.are-you-sure.ts';
 import {submitFormFetchAction} from './common-fetch-action.ts';
@@ -205,6 +206,9 @@ export function initRepoEditor() {
   (async () => {
     const editor = await createCodeEditor(editArea, filenameInput);
     filenameInput.addEventListener('input', onInputDebounce(() => editor.updateFilename(filenameInput.value)));
+
+    // Allow attaching files (e.g. images) that get committed alongside the edit
+    initEditorUpload(editor, elForm);
 
     // Update the editor from query params, if available,
     // only after the dirtyFileClass initialization
